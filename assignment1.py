@@ -5,7 +5,6 @@ import time
 from ipv8.configuration import ConfigBuilder, Strategy, WalkerDefinition, default_bootstrap_defs
 from ipv8.community import Community
 from ipv8.peer import Peer
-from ipv8.peerdiscovery.network import PeerObserver
 from ipv8_service import IPv8
 from ipv8.lazy_community import lazy_wrapper
 from ipv8.messaging.lazy_payload import VariablePayload, vp_compile
@@ -25,12 +24,17 @@ class ResponsePayload(VariablePayload):
     format_list = ["?", "varlenHutf8"]
     names = ["success", "message"]
 
-class LabCommunity(Community, PeerObserver):
+class LabCommunity(Community):
     community_id = b""
     server_public_key = b""
+    email=b""
+    github_url=b""
+    nonce=0
 
     def __init__(self, settings):
         super().__init__(settings)
+        
+        self.submission_sent = False
         self.add_message_handler(ResponsePayload, self.on_response)
 
     def started(self):
@@ -43,9 +47,24 @@ class LabCommunity(Community, PeerObserver):
         )
 
     async def find_server(self):
+        if self.submission_sent:
+            return
+        
         for peer in self.get_peers():
-            if peer.public_key.key_to_bin() == self.server_public_key:
+            peer_public_key = peer.public_key.key_to_bin()
+
+            if peer_public_key == self.server_public_key:
                 print("Verified server found:", peer.address)
+                self.ez_send(
+                    peer,
+                    SubmissionPayload(
+                        self.email,
+                        self.github_url,
+                        self.nonce,
+                    ),
+                )
+
+                self.submission_sent = True
                 return
             
     def on_peer_added(self, peer: Peer):
@@ -103,6 +122,14 @@ async def main():
 
     args = parser.parse_args()
 
+    if "\n" in args.email:
+        print("Email must not contain a newline.")
+        return
+
+    if "\n" in args.github_url:
+        print("GitHub URL must not contain a newline.")
+        return
+
     if ((not args.email.endswith("@tudelft.nl")) and (not args.email.endswith("@student.tudelft.nl"))) or len(args.email.encode("utf-8")) > 254:
         print("Invalid email address. Please provide a valid TU Delft email address.")
         return
@@ -119,9 +146,11 @@ async def main():
 
     LabCommunity.community_id = bytes.fromhex(args.community_id)
     LabCommunity.server_public_key = bytes.fromhex(args.server_public_key)
+    LabCommunity.email = args.email
+    LabCommunity.github_url = args.github_url
 
-    email_bytes = args.email.replace("\n", "").encode("utf-8")
-    github_url_bytes = args.github_url.replace("\n", "").encode("utf-8")
+    email_bytes = args.email.encode("utf-8")
+    github_url_bytes = args.github_url.encode("utf-8")
 
     # IPv8 configuration.
     builder = ConfigBuilder().clear_keys().clear_overlays()
@@ -155,8 +184,6 @@ async def main():
         },
     )
 
-    await ipv8.start()
-
     peer = ipv8.keys["lab-key"]
     print("IPv8 identity loaded.")
     print("Private key file:", args.key_file)
@@ -167,9 +194,10 @@ async def main():
     print("Starting local Proof of Work search...")
     start_time = time.time()
     nonce = 0
+    max_nonce = 2**63 - 1
 
-    while True:
-        nonce_bytes = nonce.to_bytes(8)
+    while nonce <= max_nonce:
+        nonce_bytes = nonce.to_bytes(8, byteorder="big", signed=False)
 
         digest = hashlib.sha256(hash_prefix + nonce_bytes).digest()
 
@@ -182,11 +210,15 @@ async def main():
             print("Nonce:", nonce)
             print("Hash:", digest.hex())
             print("Elapsed seconds:", round(elapsed, 2))
-
+            LabCommunity.nonce = nonce
             break
 
         nonce += 1
+    else:
+        raise RuntimeError("No valid nonce found before reaching the int64 limit.")
 
+    await ipv8.start()
+    
     try:
         while True:
             await asyncio.sleep(1)
