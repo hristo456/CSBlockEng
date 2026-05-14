@@ -398,9 +398,16 @@ class Lab2Community(Community):
         for member_index, peer in self.member_peers.items():
             if member_index != self.local_member_index:
                 self.ez_send(peer, payload)
+                print(
+                    f"Sent nonce relay for round {state.round_number} "
+                    f"to member {member_index + 1} at {peer.address}."
+                )
 
         state.last_nonce_relay_at = now
-        print(f"Relayed nonce for round {state.round_number}.")
+        print(
+            f"Relayed nonce for round {state.round_number} "
+            f"to {len(self.member_peers)} known teammates."
+        )
 
     def submit_current_bundle(self, now: float):
         state = self.round_state
@@ -539,12 +546,25 @@ class Lab2Community(Community):
 
     @lazy_wrapper(TeamNoncePayload)
     def on_team_nonce(self, peer: Peer, payload: TeamNoncePayload):
+        print(
+            f"Team nonce packet received for round {payload.round_number} "
+            f"from peer {peer.public_key.key_to_bin().hex()}."
+        )
         sender_index = self.member_index_for_key_hex(peer.public_key.key_to_bin().hex())
         if sender_index is None:
+            print("Ignored nonce relay from a peer that is not in the member list.")
             return
         if not self.valid_group(payload.group_id):
+            print(
+                f"Ignored nonce relay for group {payload.group_id!r}; "
+                f"local group is {self.group_id!r}."
+            )
             return
         if payload.submitter_index != self.submitter_index_for_round(payload.round_number):
+            print(
+                f"Ignored nonce relay with submitter index {payload.submitter_index}; "
+                f"expected {self.submitter_index_for_round(payload.round_number)}."
+            )
             return
 
         print(f"Nonce relay received for round {payload.round_number} from member {sender_index + 1}.")
